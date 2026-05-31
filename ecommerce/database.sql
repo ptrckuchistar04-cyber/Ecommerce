@@ -1,5 +1,5 @@
 -- ============================================================
--- On The Line — v2 Database Schema
+-- On The Line — v2.1 Database Schema (updated with full details)
 -- Import in phpMyAdmin: select DB (or create on_the_line_db) and run.
 -- Safe to re-run: drops then recreates everything.
 -- ============================================================
@@ -8,22 +8,18 @@ CREATE DATABASE IF NOT EXISTS on_the_line_db CHARACTER SET utf8mb4 COLLATE utf8m
 USE on_the_line_db;
 
 SET FOREIGN_KEY_CHECKS = 0;
+DROP TABLE IF EXISTS inquiry_images;
 DROP TABLE IF EXISTS payment_logs;
 DROP TABLE IF EXISTS transaction_items;
 DROP TABLE IF EXISTS transactions;
 DROP TABLE IF EXISTS reservation_carts;
 DROP TABLE IF EXISTS images;
-DROP TABLE IF EXISTS product_images;
 DROP TABLE IF EXISTS amenities;
 DROP TABLE IF EXISTS vehicle_details;
-DROP TABLE IF EXISTS real_estate_details;
 DROP TABLE IF EXISTS property_details;
 DROP TABLE IF EXISTS compare_sessions;
 DROP TABLE IF EXISTS sell_inquiries;
-DROP TABLE IF EXISTS order_items;
-DROP TABLE IF EXISTS orders;
 DROP TABLE IF EXISTS listings;
-DROP TABLE IF EXISTS products;
 DROP TABLE IF EXISTS users;
 SET FOREIGN_KEY_CHECKS = 1;
 
@@ -36,13 +32,11 @@ CREATE TABLE users (
     email VARCHAR(100) UNIQUE NOT NULL,
     password_hash VARCHAR(255) NOT NULL,
     phone VARCHAR(11) DEFAULT NULL,
-    -- Structured address (Philippines PSGC standard)
     address_barangay VARCHAR(150) DEFAULT NULL,
     address_city     VARCHAR(150) DEFAULT NULL,
     address_province VARCHAR(150) DEFAULT NULL,
     address_region   VARCHAR(150) DEFAULT NULL,
     address_country  VARCHAR(50)  DEFAULT 'Philippines',
-    -- Birthday + auto-computed age (always current)
     birthday DATE DEFAULT NULL,
     age INT GENERATED ALWAYS AS (
         CASE WHEN birthday IS NULL THEN NULL
@@ -58,7 +52,7 @@ CREATE TABLE users (
 ) ENGINE=InnoDB;
 
 -- ============================================================
--- LISTINGS
+-- LISTINGS  (with full property & vehicle details)
 -- ============================================================
 CREATE TABLE listings (
     id INT AUTO_INCREMENT PRIMARY KEY,
@@ -81,17 +75,26 @@ CREATE TABLE listings (
     INDEX idx_promo (is_promo)
 ) ENGINE=InnoDB;
 
+-- Property details with mortgage fields
 CREATE TABLE property_details (
     listing_id INT PRIMARY KEY,
     property_type ENUM('house','condo','townhouse','land') NOT NULL,
     square_meters DECIMAL(8,2) NOT NULL,
+    lot_area DECIMAL(10,2) DEFAULT NULL,
     bedrooms INT DEFAULT 0,
     bathrooms INT DEFAULT 0,
+    floors INT DEFAULT 1,
     year_built YEAR DEFAULT NULL,
     location VARCHAR(255) DEFAULT NULL,
+    is_mortgaged TINYINT(1) DEFAULT 0,
+    monthly_amortization DECIMAL(10,2) DEFAULT NULL,
+    mortgage_bank VARCHAR(100) DEFAULT NULL,
+    furnishing VARCHAR(50) DEFAULT NULL,
+    parking_slots INT DEFAULT 0,
     FOREIGN KEY (listing_id) REFERENCES listings(id) ON DELETE CASCADE
 ) ENGINE=InnoDB;
 
+-- Vehicle details with extra fields
 CREATE TABLE vehicle_details (
     listing_id INT PRIMARY KEY,
     make VARCHAR(50) NOT NULL,
@@ -102,6 +105,10 @@ CREATE TABLE vehicle_details (
     fuel_type VARCHAR(30) DEFAULT NULL,
     modifications TEXT DEFAULT NULL,
     vin VARCHAR(17) UNIQUE DEFAULT NULL,
+    color VARCHAR(30) DEFAULT NULL,
+    engine_type VARCHAR(50) DEFAULT NULL,
+    `condition` VARCHAR(50) DEFAULT 'used',
+    plate_number VARCHAR(20) DEFAULT NULL,
     FOREIGN KEY (listing_id) REFERENCES listings(id) ON DELETE CASCADE
 ) ENGINE=InnoDB;
 
@@ -175,6 +182,9 @@ CREATE TABLE payment_logs (
     FOREIGN KEY (transaction_id) REFERENCES transactions(id) ON DELETE SET NULL
 ) ENGINE=InnoDB;
 
+-- ============================================================
+-- SELL INQUIRIES  (stores ALL listing details for auto-creation)
+-- ============================================================
 CREATE TABLE sell_inquiries (
     id INT AUTO_INCREMENT PRIMARY KEY,
     user_id INT NOT NULL,
@@ -183,6 +193,35 @@ CREATE TABLE sell_inquiries (
     description TEXT,
     asking_price DECIMAL(12,2) NOT NULL,
     contact_phone VARCHAR(20),
+    main_image VARCHAR(255) DEFAULT NULL,
+    -- Property fields
+    property_type VARCHAR(30) DEFAULT NULL,
+    square_meters DECIMAL(10,2) DEFAULT NULL,
+    lot_area DECIMAL(10,2) DEFAULT NULL,
+    bedrooms INT DEFAULT 0,
+    bathrooms INT DEFAULT 0,
+    floors INT DEFAULT 1,
+    year_built YEAR DEFAULT NULL,
+    location VARCHAR(255) DEFAULT NULL,
+    is_mortgaged TINYINT(1) DEFAULT 0,
+    monthly_amortization DECIMAL(10,2) DEFAULT NULL,
+    mortgage_bank VARCHAR(100) DEFAULT NULL,
+    furnishing VARCHAR(50) DEFAULT NULL,
+    parking_slots INT DEFAULT 0,
+    -- Vehicle fields
+    make VARCHAR(50) DEFAULT NULL,
+    model VARCHAR(50) DEFAULT NULL,
+    vehicle_year YEAR DEFAULT NULL,
+    mileage INT UNSIGNED DEFAULT 0,
+    transmission VARCHAR(30) DEFAULT 'automatic',
+    fuel_type VARCHAR(30) DEFAULT NULL,
+    modifications TEXT DEFAULT NULL,
+    vin VARCHAR(17) DEFAULT NULL,
+    color VARCHAR(30) DEFAULT NULL,
+    engine_type VARCHAR(50) DEFAULT NULL,
+    vehicle_condition VARCHAR(50) DEFAULT 'used',
+    plate_number VARCHAR(20) DEFAULT NULL,
+    -- Status
     status ENUM('new','reviewing','approved','rejected') DEFAULT 'new',
     admin_notes TEXT,
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
@@ -190,8 +229,18 @@ CREATE TABLE sell_inquiries (
     INDEX idx_status (status)
 ) ENGINE=InnoDB;
 
+-- Inquiry images (multiple images per inquiry)
+CREATE TABLE inquiry_images (
+    id INT AUTO_INCREMENT PRIMARY KEY,
+    inquiry_id INT NOT NULL,
+    url VARCHAR(255) NOT NULL,
+    sort_order INT DEFAULT 0,
+    FOREIGN KEY (inquiry_id) REFERENCES sell_inquiries(id) ON DELETE CASCADE,
+    INDEX idx_inquiry (inquiry_id)
+) ENGINE=InnoDB;
+
 -- ============================================================
--- SEED DATA  (fresh, correct password hashes)
+-- SEED DATA
 -- admin password: admin123      customer password: customer123
 -- ============================================================
 INSERT INTO users (full_name, email, password_hash, phone, address_barangay, address_city, address_province, address_region, address_country, birthday, gender, role) VALUES
@@ -210,12 +259,12 @@ INSERT INTO listings (admin_id, type, title, description, price, reservation_fee
 (1, 'vehicle',  '2023 Ford Ranger Raptor',       'Powerful Ranger Raptor with off-road package.', 2150000.00, 20000.00, 'available', 1),
 (1, 'vehicle',  '2021 Suzuki Jimny GLX',         'Fun and capable mini SUV. Perfect for city driving.', 950000.00, 8000.00, 'available', 0);
 
-INSERT INTO property_details (listing_id, property_type, square_meters, bedrooms, bathrooms, year_built, location) VALUES
-(1, 'house',     180.50, 3, 2, 2020, 'Makati City'),
-(2, 'condo',      95.00, 2, 2, 2022, 'Taguig (BGC)'),
-(3, 'townhouse', 150.00, 4, 3, 2019, 'Quezon City'),
-(4, 'land',      300.00, 0, 0, NULL, 'Tagaytay'),
-(5, 'house',     200.00, 4, 3, 2021, 'Batangas');
+INSERT INTO property_details (listing_id, property_type, square_meters, bedrooms, bathrooms, year_built, location, furnishing, parking_slots, floors) VALUES
+(1, 'house',     180.50, 3, 2, 2020, 'Makati City', 'Fully Furnished', 2, 2),
+(2, 'condo',      95.00, 2, 2, 2022, 'Taguig (BGC)', 'Semi-Furnished', 1, 1),
+(3, 'townhouse', 150.00, 4, 3, 2019, 'Quezon City', 'Unfurnished', 2, 3),
+(4, 'land',      300.00, 0, 0, NULL, 'Tagaytay', NULL, 0, 1),
+(5, 'house',     200.00, 4, 3, 2021, 'Batangas', 'Fully Furnished', 3, 2);
 
 INSERT INTO amenities (listing_id, name) VALUES
 (1,'Swimming Pool'),(1,'Garden'),(1,'2-Car Garage'),
@@ -224,9 +273,9 @@ INSERT INTO amenities (listing_id, name) VALUES
 (4,'Mountain View'),(4,'Near Highway'),
 (5,'Beach Access'),(5,'Veranda'),(5,'Outdoor Kitchen');
 
-INSERT INTO vehicle_details (listing_id, make, model, year, mileage, transmission, fuel_type, modifications, vin) VALUES
-(6,'Toyota','Fortuner',2023,15000,'automatic','Diesel','All stock, premium tint','MHFZX80G000123456'),
-(7,'Honda','Civic',2022,25000,'automatic','Gasoline','Ceramic coating, modulo kit','FD23456789012'),
-(8,'Mitsubishi','Montero Sport',2020,45000,'automatic','Diesel','Upgraded sound system','MMBJRKH100345678'),
-(9,'Ford','Ranger',2023,8000,'automatic','Diesel','Roll bar, bed liner','RAP1234567890'),
-(10,'Suzuki','Jimny',2021,30000,'automatic','Gasoline','Lifted suspension, roof rack','JIMNY2021000987');
+INSERT INTO vehicle_details (listing_id, make, model, year, mileage, transmission, fuel_type, modifications, vin, color, `condition`) VALUES
+(6,'Toyota','Fortuner',2023,15000,'automatic','Diesel','All stock, premium tint','MHFZX80G000123456','Silver','used'),
+(7,'Honda','Civic',2022,25000,'automatic','Gasoline','Ceramic coating, modulo kit','FD23456789012','Red','used'),
+(8,'Mitsubishi','Montero Sport',2020,45000,'automatic','Diesel','Upgraded sound system','MMBJRKH100345678','Black','used'),
+(9,'Ford','Ranger',2023,8000,'automatic','Diesel','Roll bar, bed liner','RAP1234567890','White','used'),
+(10,'Suzuki','Jimny',2021,30000,'automatic','Gasoline','Lifted suspension, roof rack','JIMNY2021000987','Green','used');

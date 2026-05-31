@@ -8,6 +8,7 @@ if ($id > 0) {
     $listing = getListing($id);
     if (!$listing) { header('Location: listing.php'); exit; }
     $amenities = getListingAmenities($id);
+    $images = getListingImages($id);
     $pageTitle = $listing['title'] . ' — On The Line';
     include __DIR__ . '/includes/header.php';
     ?>
@@ -26,10 +27,28 @@ if ($id > 0) {
         <?php unset($_SESSION['flash_error']); endif; ?>
 
       <div class="grid lg:grid-cols-2 gap-10">
+        <!-- Image gallery -->
         <div data-reveal>
-          <div class="rounded-3xl overflow-hidden shadow-deep aspect-[4/3] bg-white">
-            <img src="<?= e(listingImg($listing['main_image'], $listing['type'])) ?>" alt="<?= e($listing['title']) ?>" class="w-full h-full object-cover">
-          </div>
+          <?php $allImgs = array_merge(
+            $listing['main_image'] ? [$listing['main_image']] : [],
+            $images ?: []
+          ); $allImgs = array_unique($allImgs);
+          if (!empty($allImgs)): ?>
+            <div class="rounded-3xl overflow-hidden shadow-deep aspect-[4/3] bg-white mb-3">
+              <img id="mainImg" src="<?= e($allImgs[0]) ?>" alt="<?= e($listing['title']) ?>" class="w-full h-full object-cover transition">
+            </div>
+            <?php if (count($allImgs) > 1): ?>
+            <div class="flex gap-2 overflow-x-auto pb-2">
+              <?php foreach ($allImgs as $idx => $img): ?>
+                <img src="<?= e($img) ?>" onclick="document.getElementById('mainImg').src=this.src" class="w-20 h-16 rounded-xl object-cover border-2 cursor-pointer hover:border-orange transition <?= $idx===0?'border-orange':'border-transparent' ?>">
+              <?php endforeach; ?>
+            </div>
+            <?php endif; ?>
+          <?php else: ?>
+            <div class="rounded-3xl overflow-hidden shadow-deep aspect-[4/3] bg-white">
+              <img src="<?= e(listingImg($listing['main_image'], $listing['type'])) ?>" alt="<?= e($listing['title']) ?>" class="w-full h-full object-cover">
+            </div>
+          <?php endif; ?>
         </div>
 
         <div data-reveal>
@@ -46,23 +65,70 @@ if ($id > 0) {
 
           <p class="mt-5 text-ink/80 leading-relaxed"><?= nl2br(e($listing['description'])) ?></p>
 
-          <div class="mt-7 grid sm:grid-cols-2 gap-3 text-sm">
-            <?php if ($listing['type']==='property'): ?>
-              <div class="glass rounded-xl p-3"><b>Type:</b> <?= e(ucfirst($listing['property_type'])) ?></div>
-              <div class="glass rounded-xl p-3"><b>Area:</b> <?= e($listing['square_meters']) ?> sqm</div>
-              <div class="glass rounded-xl p-3"><b>Bedrooms:</b> <?= e($listing['bedrooms']) ?></div>
-              <div class="glass rounded-xl p-3"><b>Bathrooms:</b> <?= e($listing['bathrooms']) ?></div>
-              <?php if (!empty($listing['year_built'])): ?><div class="glass rounded-xl p-3"><b>Built:</b> <?= e($listing['year_built']) ?></div><?php endif; ?>
-              <?php if (!empty($listing['location'])): ?><div class="glass rounded-xl p-3"><b>Location:</b> <?= e($listing['location']) ?></div><?php endif; ?>
-            <?php else: ?>
-              <div class="glass rounded-xl p-3"><b>Make/Model:</b> <?= e($listing['make'].' '.$listing['model']) ?></div>
-              <div class="glass rounded-xl p-3"><b>Year:</b> <?= e($listing['year']) ?></div>
-              <div class="glass rounded-xl p-3"><b>Mileage:</b> <?= number_format($listing['mileage']) ?> km</div>
-              <div class="glass rounded-xl p-3"><b>Transmission:</b> <?= e(ucfirst($listing['transmission'])) ?></div>
-              <div class="glass rounded-xl p-3"><b>Fuel:</b> <?= e($listing['fuel_type']) ?></div>
-              <?php if (!empty($listing['modifications'])): ?><div class="glass rounded-xl p-3"><b>Mods:</b> <?= e($listing['modifications']) ?></div><?php endif; ?>
-            <?php endif; ?>
-          </div>
+          <!-- Property details -->
+          <?php if ($listing['type']==='property'): ?>
+            <div class="mt-7 grid sm:grid-cols-2 gap-3 text-sm">
+              <div class="glass rounded-xl p-3"><b>Type:</b> <?= e(ucfirst($listing['property_type'] ?? 'N/A')) ?></div>
+              <div class="glass rounded-xl p-3"><b>Floor Area:</b> <?= e($listing['square_meters'] ?? '—') ?> sqm</div>
+              <?php if (!empty($listing['lot_area'])): ?>
+                <div class="glass rounded-xl p-3"><b>Lot Area:</b> <?= e($listing['lot_area']) ?> sqm</div>
+              <?php endif; ?>
+              <div class="glass rounded-xl p-3"><b>Bedrooms:</b> <?= e($listing['bedrooms'] ?? '—') ?></div>
+              <div class="glass rounded-xl p-3"><b>Bathrooms:</b> <?= e($listing['bathrooms'] ?? '—') ?></div>
+              <div class="glass rounded-xl p-3"><b>Floors:</b> <?= e($listing['floors'] ?? 1) ?></div>
+              <?php if (!empty($listing['parking_slots'])): ?>
+                <div class="glass rounded-xl p-3"><b>Parking:</b> <?= (int)$listing['parking_slots'] ?> slot(s)</div>
+              <?php endif; ?>
+              <?php if (!empty($listing['year_built'])): ?>
+                <div class="glass rounded-xl p-3"><b>Year Built:</b> <?= e($listing['year_built']) ?></div>
+              <?php endif; ?>
+              <?php if (!empty($listing['location'])): ?>
+                <div class="glass rounded-xl p-3"><b>Location:</b> <?= e($listing['location']) ?></div>
+              <?php endif; ?>
+              <?php if (!empty($listing['furnishing']) && $listing['furnishing'] !== 'unfurnished'): ?>
+                <div class="glass rounded-xl p-3"><b>Furnishing:</b> <?= e(ucfirst($listing['furnishing'])) ?></div>
+              <?php endif; ?>
+              <?php if (!empty($listing['is_mortgaged'])): ?>
+                <div class="glass rounded-xl p-3 bg-amber-50 border border-amber-200">
+                  <b>🏦 Mortgaged</b>
+                  <?php if (!empty($listing['monthly_amortization'])): ?>
+                    <br>Amortization: <?= money($listing['monthly_amortization']) ?>/mo
+                  <?php endif; ?>
+                  <?php if (!empty($listing['mortgage_bank'])): ?>
+                    <br>Bank: <?= e($listing['mortgage_bank']) ?>
+                  <?php endif; ?>
+                </div>
+              <?php endif; ?>
+            </div>
+
+          <!-- Vehicle details -->
+          <?php else: ?>
+            <div class="mt-7 grid sm:grid-cols-2 gap-3 text-sm">
+              <div class="glass rounded-xl p-3"><b>Make/Model:</b> <?= e(trim(($listing['make']??'').' '.($listing['model']??''))) ?></div>
+              <div class="glass rounded-xl p-3"><b>Year:</b> <?= e($listing['year'] ?? '—') ?></div>
+              <div class="glass rounded-xl p-3"><b>Mileage:</b> <?= number_format((int)($listing['mileage'] ?? 0)) ?> km</div>
+              <div class="glass rounded-xl p-3"><b>Transmission:</b> <?= e(ucfirst($listing['transmission'] ?? '—')) ?></div>
+              <div class="glass rounded-xl p-3"><b>Fuel:</b> <?= e($listing['fuel_type'] ?? '—') ?></div>
+              <?php if (!empty($listing['color'])): ?>
+                <div class="glass rounded-xl p-3"><b>Color:</b> <?= e($listing['color']) ?></div>
+              <?php endif; ?>
+              <?php if (!empty($listing['engine_type'])): ?>
+                <div class="glass rounded-xl p-3"><b>Engine:</b> <?= e($listing['engine_type']) ?></div>
+              <?php endif; ?>
+              <?php if (!empty($listing['condition'])): ?>
+                <div class="glass rounded-xl p-3"><b>Condition:</b> <?= e(ucfirst($listing['condition'])) ?></div>
+              <?php endif; ?>
+              <?php if (!empty($listing['modifications'])): ?>
+                <div class="glass rounded-xl p-3 sm:col-span-2"><b>Modifications:</b> <?= e($listing['modifications']) ?></div>
+              <?php endif; ?>
+              <?php if (!empty($listing['vin'])): ?>
+                <div class="glass rounded-xl p-3"><b>VIN:</b> <?= e($listing['vin']) ?></div>
+              <?php endif; ?>
+              <?php if (!empty($listing['plate_number'])): ?>
+                <div class="glass rounded-xl p-3"><b>Plate:</b> <?= e($listing['plate_number']) ?></div>
+              <?php endif; ?>
+            </div>
+          <?php endif; ?>
 
           <?php if (!empty($amenities)): ?>
           <div class="mt-6">
@@ -122,7 +188,7 @@ include __DIR__ . '/includes/header.php';
         <?php elseif ($type==='vehicle'): ?>🚗 Vehicles
         <?php else: ?>All Listings <?php endif; ?>
       </h1>
-      <p class="text-ink/60">Showing <?= count($items) ?> result<?= count($items)===1?'':'s' ?><?= $search?' for "'.e($search).'"':'' ?></p>
+      <p class="text-ink/60">Showing <?= count($items) ?> result<?= count($items)===1?'':'s' ?><?= $search?' for \"'.e($search).'\"':'' ?></p>
     </div>
 
     <div class="flex gap-2">
@@ -153,9 +219,10 @@ include __DIR__ . '/includes/header.php';
             <a href="listing.php?id=<?= (int)$p['id'] ?>" class="font-display font-bold text-navy text-lg hover:text-orange transition line-clamp-1"><?= e($p['title']) ?></a>
             <div class="text-sm text-ink/60 mt-1">
               <?php if ($p['type']==='property'): ?>
-                📐 <?= e($p['square_meters']) ?>sqm • 🛏 <?= e($p['bedrooms']) ?> • 🛁 <?= e($p['bathrooms']) ?>
+                📐 <?= e($p['square_meters'] ?? '?') ?>sqm • 🛏 <?= e($p['bedrooms'] ?? 0) ?> • 🛁 <?= e($p['bathrooms'] ?? 0) ?>
+                <?php if (!empty($p['is_mortgaged'])): ?> • 🏦<?php endif; ?>
               <?php else: ?>
-                <?= e($p['make'].' '.$p['model']) ?> • <?= e($p['year']) ?> • <?= number_format($p['mileage']) ?>km
+                <?= e(trim(($p['make']??'').' '.($p['model']??''))) ?> • <?= e($p['year'] ?? '') ?> • <?= number_format((int)($p['mileage'] ?? 0)) ?>km
               <?php endif; ?>
             </div>
             <div class="mt-4 flex items-end justify-between">

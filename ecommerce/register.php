@@ -141,7 +141,9 @@ include __DIR__ . '/includes/header.php';
 
       <div>
         <label class="block text-sm font-semibold text-navy mb-1">Birthday *</label>
-        <input type="date" id="birthday" name="birthday" required value="<?= e($_POST['birthday'] ?? '') ?>" max="<?= date('Y-m-d') ?>" class="w-full bg-slate-50 border border-slate-200 rounded-xl px-4 py-3 focus:ring-2 focus:ring-orange focus:outline-none">
+        <input type="date" id="birthday" name="birthday" required value="<?= e($_POST['birthday'] ?? '') ?>"
+               min="1900-01-01" max="<?= date('Y-m-d') ?>"
+               class="w-full bg-slate-50 border border-slate-200 rounded-xl px-4 py-3 focus:ring-2 focus:ring-orange focus:outline-none">
       </div>
       <div>
         <label class="block text-sm font-semibold text-navy mb-1">Age (auto)</label>
@@ -199,6 +201,16 @@ function calcAge() {
 }
 bday.addEventListener('input', calcAge);
 calcAge();
+
+/* Block form if under 18 */
+document.getElementById('regForm')?.addEventListener('submit', function(e) {
+  const ageText = ageEl.value;
+  const ageNum = parseInt(ageText, 10);
+  if (ageNum < 18) {
+    e.preventDefault();
+    alert('You must be at least 18 years old to register.');
+  }
+});
 
 /* ===== PSGC cascading address (Region → Province → City → Barangay) =====
    Uses public PSGC API (https://psgc.gitlab.io/api/) — no API key required. */

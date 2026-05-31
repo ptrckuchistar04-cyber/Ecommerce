@@ -61,14 +61,24 @@ tailwind.config = {
   .chip { padding:.35rem .8rem;border-radius:999px;font-size:.78rem;font-weight:600; }
 
   /* ---- LOGO TREATMENT ---- */
-  /* Logo box: white border + soft glow, rounded. Image inside uses screen blend to hide white bg if present. */
+  /* White border + orange glow + subtle navy backing */
   .logo-box {
     background: linear-gradient(135deg, #191970 0%, #0f0f4b 100%);
-    padding: 6px;
+    padding: 5px;
     border-radius: 18px;
-    border: 3px solid #ffffff;
-    box-shadow: 0 0 0 2px rgba(255,140,0,.45), 0 14px 30px -10px rgba(25,25,112,.55);
+    border: 4px solid #ffffff;
+    box-shadow:
+      0 0 0 2px rgba(255,140,0,.5),
+      0 0 20px rgba(255,140,0,.15),
+      0 14px 30px -10px rgba(25,25,112,.55);
     display:inline-flex;align-items:center;justify-content:center;
+    transition: box-shadow 0.3s ease;
+  }
+  .logo-box:hover {
+    box-shadow:
+      0 0 0 3px rgba(255,140,0,.6),
+      0 0 30px rgba(255,140,0,.25),
+      0 14px 40px -10px rgba(25,25,112,.65);
   }
   .logo-img { display:block; mix-blend-mode: screen; filter: brightness(1.15) contrast(1.1); }
 
