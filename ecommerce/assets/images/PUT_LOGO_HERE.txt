@@ -1,0 +1,18 @@
+Save your transparent-background logo here as exactly:
+
+    logo.png
+
+Steps to make your logo transparent:
+1. Go to https://www.remove.bg/upload
+2. Upload the "On The Line" logo JPG
+3. Download the transparent PNG
+4. Rename it to logo.png
+5. Save it inside this folder (assets/images/logo.png)
+
+The page will automatically:
+  - add a white border around it
+  - add an orange glow
+  - show it BIG on the homepage hero
+  - shrink it into the top-left corner as you scroll
+
+If logo.png is missing, a fallback "OL" badge shows up automatically.
