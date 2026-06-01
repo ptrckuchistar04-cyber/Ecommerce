@@ -15,34 +15,38 @@ if (is_file(__DIR__ . '/config.local.php')) {
     require __DIR__ . '/config.local.php';
 }
 
-/** Read a secret from env → constant-from-local → default. */
-function cfg(string $key, string $default = ''): string {
+/**
+ * Define a constant only if it isn't already set, pulling from (in order):
+ *   1. an env var of the same name,
+ *   2. a constant already defined in config.local.php,
+ *   3. the supplied default.
+ */
+function def(string $key, string $default = ''): void {
+    if (defined($key)) return;                 // already set by config.local.php
     $env = getenv($key);
-    if ($env !== false && $env !== '') return $env;
-    if (defined($key)) return (string) constant($key);
-    return $default;
+    define($key, ($env !== false && $env !== '') ? $env : $default);
 }
 
 // ====== APP ======
 define('SITE_NAME', 'On The Line');
-define('SITE_URL',  cfg('SITE_URL', 'http://localhost/ecommerce/'));
+def('SITE_URL', 'http://localhost/ecommerce/');
 define('UPLOAD_DIR', __DIR__ . '/uploads/products/');
 define('MAX_COMPARE_ITEMS', 4);
 
 // ====== DATABASE ======
-define('DB_HOST', cfg('DB_HOST', 'localhost'));
-define('DB_NAME', cfg('DB_NAME', 'on_the_line_db'));
-define('DB_USER', cfg('DB_USER', 'root'));
-define('DB_PASS', cfg('DB_PASS', ''));            // stock XAMPP root has no password
+def('DB_HOST', 'localhost');
+def('DB_NAME', 'on_the_line_db');
+def('DB_USER', 'root');
+def('DB_PASS', '');                 // stock XAMPP root has no password
 define('DB_CHARSET', 'utf8mb4');
 
 // ====== XENDIT ======
 // IMPORTANT: never commit a real key. Provide it via env var XENDIT_SECRET_KEY
 // or config.local.php. The placeholder below lets the UI load without a key.
-define('XENDIT_SECRET_KEY', cfg('XENDIT_SECRET_KEY', 'REPLACE_WITH_YOUR_XENDIT_SECRET_KEY'));
+def('XENDIT_SECRET_KEY', 'REPLACE_WITH_YOUR_XENDIT_SECRET_KEY');
 // Token Xendit sends in X-CALLBACK-TOKEN header for webhooks.
 // Get this from Xendit dashboard → Settings → Callbacks.
-define('XENDIT_CALLBACK_TOKEN', cfg('XENDIT_CALLBACK_TOKEN', 'REPLACE_WITH_YOUR_WEBHOOK_TOKEN'));
+def('XENDIT_CALLBACK_TOKEN', 'REPLACE_WITH_YOUR_WEBHOOK_TOKEN');
 define('XENDIT_API_BASE',      'https://api.xendit.co');
 define('XENDIT_SUCCESS_URL',   SITE_URL . 'order-success.php');
 define('XENDIT_FAILURE_URL',   SITE_URL . 'checkout.php?status=failed');

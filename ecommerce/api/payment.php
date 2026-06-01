@@ -22,14 +22,14 @@ $total = 0; foreach ($cart as $c) $total += (float)$c['reservation_fee'];
 // If the user already has a pending order for the same total created in the last hour,
 // just send them back to that existing Xendit invoice (handles refresh / double-click).
 $dupe = db()->prepare(
-   "SELECT xendit_invoice_url FROM transactions
+   "SELECT order_number FROM transactions
     WHERE user_id = ? AND status = 'pending' AND total_reservation_fee = ?
       AND xendit_invoice_url IS NOT NULL
       AND created_at >= (NOW() - INTERVAL 1 HOUR)
     ORDER BY created_at DESC LIMIT 1");
 $dupe->execute([$uid, $total]);
-if ($existingUrl = $dupe->fetchColumn()) {
-    header('Location: ' . $existingUrl);
+if ($existingOrder = $dupe->fetchColumn()) {
+    header('Location: ../pay.php?order=' . urlencode($existingOrder));
     exit;
 }
 
@@ -130,8 +130,9 @@ try {
 
     db()->commit();
 
-    // Redirect to Xendit
-    header('Location: ' . $data['invoice_url']);
+    // Send the buyer to our QR payment page (which shows the QR + a "Pay on Xendit"
+    // button and polls for confirmation). This works without a public webhook URL.
+    header('Location: ../pay.php?order=' . urlencode($orderNumber));
     exit;
 
 } catch (Throwable $e) {

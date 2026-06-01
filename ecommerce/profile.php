@@ -146,6 +146,16 @@ $inq = db()->prepare("SELECT * FROM sell_inquiries WHERE user_id=? ORDER BY crea
 $inq->execute([$uid]);
 $inquiries = $inq->fetchAll();
 
+// Seller's own approved listings (so they can pay a promo fee). Only when v4 schema exists.
+$myListings = [];
+if (hasPromoFields()) {
+    $ml = db()->prepare(
+        "SELECT id, type, title, main_image, status, is_promo, promo_status, price
+         FROM listings WHERE seller_id=? ORDER BY created_at DESC LIMIT 50");
+    $ml->execute([$uid]);
+    $myListings = $ml->fetchAll();
+}
+
 $pageTitle = 'My Profile — On The Line';
 include __DIR__ . '/includes/header.php';
 ?>
@@ -156,6 +166,38 @@ include __DIR__ . '/includes/header.php';
 
   <?php if ($err): ?><div class="bg-rose-50 border border-rose-200 text-rose-700 px-4 py-3 rounded-xl mb-4"><?= e($err) ?></div><?php endif; ?>
   <?php if ($ok):  ?><div class="bg-emerald-50 border border-emerald-200 text-emerald-700 px-4 py-3 rounded-xl mb-4"><?= e($ok) ?></div><?php endif; ?>
+
+  <?php if (!empty($myListings)): ?>
+  <div class="bg-white rounded-2xl shadow-md p-6 mb-6">
+    <h2 class="font-display font-bold text-navy text-lg mb-1">🏷️ My Approved Listings</h2>
+    <p class="text-sm text-ink/60 mb-4">Boost a listing to the homepage "Featured" carousel by paying a one-time promo fee.</p>
+    <div class="grid sm:grid-cols-2 lg:grid-cols-3 gap-4">
+      <?php foreach ($myListings as $ml): ?>
+        <div class="border border-slate-200 rounded-xl overflow-hidden">
+          <div class="aspect-[4/3] bg-slate-100">
+            <img src="<?= e(listingImg($ml['main_image'], $ml['type'])) ?>" alt="" class="w-full h-full object-cover">
+          </div>
+          <div class="p-3">
+            <a href="listing.php?id=<?= (int)$ml['id'] ?>" class="font-bold text-navy text-sm line-clamp-1 hover:text-orange"><?= e($ml['title']) ?></a>
+            <div class="text-xs text-ink/60 mt-0.5"><?= money($ml['price']) ?> • <span class="capitalize"><?= e($ml['status']) ?></span></div>
+
+            <div class="mt-2">
+              <?php if ($ml['is_promo']): ?>
+                <span class="chip bg-orange/15 text-orange text-xs">⭐ Featured</span>
+              <?php elseif ($ml['promo_status']==='pending_payment'): ?>
+                <a href="promo.php?listing=<?= (int)$ml['id'] ?>" class="btn btn-primary text-xs w-full justify-center">Continue Promo Payment →</a>
+              <?php elseif ($ml['status']==='available'): ?>
+                <a href="promo.php?listing=<?= (int)$ml['id'] ?>" class="btn btn-ghost text-xs w-full justify-center">☆ Promote (₱<?= number_format(promoFeeFor($ml),0) ?>)</a>
+              <?php else: ?>
+                <span class="text-xs text-ink/40">Not eligible for promo</span>
+              <?php endif; ?>
+            </div>
+          </div>
+        </div>
+      <?php endforeach; ?>
+    </div>
+  </div>
+  <?php endif; ?>
 
   <div class="grid lg:grid-cols-2 gap-6">
 

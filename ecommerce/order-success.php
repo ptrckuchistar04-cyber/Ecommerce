@@ -11,6 +11,14 @@ $stmt->execute([$num, currentUserId()]);
 $order = $stmt->fetch();
 if (!$order) { header('Location: orders.php'); exit; }
 
+// Reconcile with Xendit on return (so the status reflects the real payment
+// even without a public webhook). Re-fetch the row afterwards.
+$liveStatus = syncTransactionWithXendit($order);
+if ($liveStatus !== ($order['status'] ?? '')) {
+    $stmt->execute([$num, currentUserId()]);
+    $order = $stmt->fetch();
+}
+
 $items = db()->prepare(
   "SELECT ti.reservation_fee, l.title, l.type FROM transaction_items ti
    JOIN listings l ON l.id = ti.listing_id WHERE ti.transaction_id=?");
@@ -22,8 +30,12 @@ include __DIR__ . '/includes/header.php';
 ?>
 
 <div class="max-w-2xl mx-auto px-6 py-16 text-center">
-  <div class="text-7xl mb-4 animate-float"><?= $order['status']==='paid'?'✅':'⏳' ?></div>
-  <h1 class="font-display text-3xl font-bold text-navy"><?= $order['status']==='paid' ? 'Reservation Confirmed!' : 'Awaiting Payment' ?></h1>
+  <?php $isPaid = in_array($order['status'], ['paid','completed'], true); ?>
+  <div class="text-7xl mb-4 animate-float"><?= $isPaid ? '✅' : '⏳' ?></div>
+  <h1 class="font-display text-3xl font-bold text-navy"><?= $isPaid ? 'Payment Complete!' : 'Awaiting Payment' ?></h1>
+  <?php if ($isPaid): ?>
+    <p class="text-emerald-600 font-semibold mt-1">Your reservation is confirmed and the item is now reserved for you.</p>
+  <?php endif; ?>
   <p class="text-ink/60 mt-1">Order #<?= e($order['order_number']) ?></p>
 
   <div class="bg-white rounded-3xl shadow-deep p-6 mt-8 text-left">

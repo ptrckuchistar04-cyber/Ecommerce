@@ -190,19 +190,38 @@ function createListingFromInquiry(int $inquiryId, ?int $adminId = null): ?int {
         $reserveFee = min($price * 0.01, 50000);
         if ($reserveFee < 1000) $reserveFee = 1000;
 
-        $lStmt = db()->prepare(
-            "INSERT INTO listings (admin_id, type, title, description, price, reservation_fee, main_image, status, is_promo)
-             VALUES (?, ?, ?, ?, ?, ?, ?, 'available', 0)"
-        );
-        $lStmt->execute([
-            $adminId,
-            $inq['item_type'],
-            $inq['title'],
-            $inq['description'],
-            $price,
-            $reserveFee,
-            $inq['main_image'],
-        ]);
+        // Record the seller (the inquiry's owner) when the schema supports it,
+        // so they can later pay a promo fee on their own approved listing.
+        if (hasPromoFields()) {
+            $lStmt = db()->prepare(
+                "INSERT INTO listings (admin_id, seller_id, type, title, description, price, reservation_fee, main_image, status, is_promo)
+                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'available', 0)"
+            );
+            $lStmt->execute([
+                $adminId,
+                (int)$inq['user_id'],
+                $inq['item_type'],
+                $inq['title'],
+                $inq['description'],
+                $price,
+                $reserveFee,
+                $inq['main_image'],
+            ]);
+        } else {
+            $lStmt = db()->prepare(
+                "INSERT INTO listings (admin_id, type, title, description, price, reservation_fee, main_image, status, is_promo)
+                 VALUES (?, ?, ?, ?, ?, ?, ?, 'available', 0)"
+            );
+            $lStmt->execute([
+                $adminId,
+                $inq['item_type'],
+                $inq['title'],
+                $inq['description'],
+                $price,
+                $reserveFee,
+                $inq['main_image'],
+            ]);
+        }
         $lid = (int)db()->lastInsertId();
 
         // 2. Create property or vehicle details
@@ -387,6 +406,195 @@ function jsonOut($data, int $code = 200): void {
     header('Content-Type: application/json');
     echo json_encode($data);
     exit;
+}
+
+/* ============ XENDIT HELPERS ============ */
+
+/** Fetch a single invoice from Xendit by id. Returns array or null. */
+function xenditGetInvoice(string $invoiceId): ?array {
+    if (!function_exists('curl_init')) return null;
+    $ch = curl_init(XENDIT_API_BASE . '/v2/invoices/' . urlencode($invoiceId));
+    curl_setopt_array($ch, [
+        CURLOPT_RETURNTRANSFER => true,
+        CURLOPT_HTTPHEADER     => ['Authorization: Basic ' . base64_encode(XENDIT_SECRET_KEY . ':')],
+        CURLOPT_TIMEOUT => 30,
+    ]);
+    $resp = curl_exec($ch);
+    $code = curl_getinfo($ch, CURLINFO_HTTP_CODE);
+    curl_close($ch);
+    if ($resp === false || $code < 200 || $code >= 300) return null;
+    $data = json_decode($resp, true);
+    return is_array($data) ? $data : null;
+}
+
+/**
+ * Mark a transaction paid and move its listings to "reserved". Idempotent.
+ * Returns true if the order is paid (now or already), false on error.
+ */
+function settleTransactionPaid(int $txId): bool {
+    try {
+        db()->beginTransaction();
+        $stmt = db()->prepare("SELECT id, user_id, status FROM transactions WHERE id=? FOR UPDATE");
+        $stmt->execute([$txId]);
+        $tx = $stmt->fetch();
+        if (!$tx) { db()->rollBack(); return false; }
+        if (in_array($tx['status'], ['paid','completed'], true)) { db()->commit(); return true; }
+
+        db()->prepare("UPDATE transactions SET status='paid', updated_at=NOW() WHERE id=?")->execute([$txId]);
+        db()->prepare(
+            "UPDATE listings l JOIN transaction_items ti ON l.id=ti.listing_id
+             SET l.status='reserved', l.updated_at=NOW()
+             WHERE ti.transaction_id=?")->execute([$txId]);
+        if (!empty($tx['user_id'])) {
+            db()->prepare("DELETE FROM reservation_carts WHERE user_id=?")->execute([$tx['user_id']]);
+        }
+        db()->commit();
+        return true;
+    } catch (Throwable $e) {
+        db()->rollBack();
+        error_log('settleTransactionPaid error: ' . $e->getMessage());
+        return false;
+    }
+}
+
+/**
+ * Reconcile a pending order with Xendit (used on the return page so payments
+ * confirm even without a public webhook URL). Returns the up-to-date status.
+ */
+function syncTransactionWithXendit(array $order): string {
+    $status = $order['status'] ?? 'pending';
+    if ($status !== 'pending' || empty($order['xendit_invoice_id'])) return $status;
+
+    $inv = xenditGetInvoice($order['xendit_invoice_id']);
+    if (!$inv) return $status;
+
+    $remote = strtoupper($inv['status'] ?? '');
+    if ($remote === 'PAID' || $remote === 'SETTLED') {
+        settleTransactionPaid((int)$order['id']);
+        try {
+            db()->prepare("INSERT INTO payment_logs (transaction_id, invoice_id, status, payload) VALUES (?,?,?,?)")
+                ->execute([(int)$order['id'], $order['xendit_invoice_id'], 'PAID_VIA_RETURN', json_encode($inv)]);
+        } catch (Throwable $e) {}
+        return 'paid';
+    }
+    if (in_array($remote, ['EXPIRED','FAILED'], true)) {
+        $newStatus = $remote === 'EXPIRED' ? 'expired' : 'cancelled';
+        try {
+            db()->prepare("UPDATE transactions SET status=?, updated_at=NOW() WHERE id=?")
+                ->execute([$newStatus, (int)$order['id']]);
+        } catch (Throwable $e) {}
+        return $newStatus;
+    }
+    return $status;
+}
+
+/* ============ SCHEMA DETECTION for v4 (promo/seller features) ============ */
+function hasPromoFields(): bool {
+    static $r = null;
+    if ($r !== null) return $r;
+    try { $r = (bool) db()->query("SHOW COLUMNS FROM listings LIKE 'promo_status'")->fetch(); }
+    catch (Exception $e) { $r = false; }
+    return $r;
+}
+function hasAdminNotifications(): bool {
+    static $r = null;
+    if ($r !== null) return $r;
+    try { $r = (bool) db()->query("SHOW TABLES LIKE 'admin_notifications'")->fetch(); }
+    catch (Exception $e) { $r = false; }
+    return $r;
+}
+
+/* ============ ADMIN NOTIFICATIONS ============ */
+function notifyAdmin(string $type, string $message, ?string $link = null): void {
+    if (!hasAdminNotifications()) { error_log("Admin notify ($type): $message"); return; }
+    try {
+        db()->prepare("INSERT INTO admin_notifications (type, message, link) VALUES (?,?,?)")
+            ->execute([$type, $message, $link]);
+    } catch (Exception $e) { error_log('notifyAdmin: ' . $e->getMessage()); }
+}
+function unreadAdminNotificationCount(): int {
+    if (!hasAdminNotifications()) return 0;
+    try { return (int) db()->query("SELECT COUNT(*) FROM admin_notifications WHERE is_read=0")->fetchColumn(); }
+    catch (Exception $e) { return 0; }
+}
+function getAdminNotifications(int $limit = 30): array {
+    if (!hasAdminNotifications()) return [];
+    try {
+        $stmt = db()->prepare("SELECT * FROM admin_notifications ORDER BY created_at DESC LIMIT :lim");
+        $stmt->bindValue(':lim', $limit, PDO::PARAM_INT);
+        $stmt->execute();
+        return $stmt->fetchAll();
+    } catch (Exception $e) { return []; }
+}
+
+/* ============ PROMO FEE ============ */
+// Flat promo fee for a featured listing (demo). Tweak as you like.
+function promoFeeFor(array $listing): float {
+    return 500.00;
+}
+
+/**
+ * Reconcile a promo payment with Xendit. On payment: mark the promo_payment 'paid',
+ * set the listing to pending_payment→paid-but-not-yet-featured, and notify the admin.
+ * Returns the up-to-date promo_payment status.
+ */
+function syncPromoWithXendit(array $promo): string {
+    $status = $promo['status'] ?? 'pending';
+    if ($status !== 'pending' || empty($promo['xendit_invoice_id'])) return $status;
+
+    $inv = xenditGetInvoice($promo['xendit_invoice_id']);
+    if (!$inv) return $status;
+    $remote = strtoupper($inv['status'] ?? '');
+
+    if ($remote === 'PAID' || $remote === 'SETTLED') {
+        try {
+            db()->beginTransaction();
+            // settle promo payment (idempotent)
+            $chk = db()->prepare("SELECT status FROM promo_payments WHERE id=? FOR UPDATE");
+            $chk->execute([(int)$promo['id']]);
+            if (in_array($chk->fetchColumn(), ['paid'], true)) { db()->commit(); return 'paid'; }
+
+            db()->prepare("UPDATE promo_payments SET status='paid', updated_at=NOW() WHERE id=?")
+                ->execute([(int)$promo['id']]);
+            // Listing: fee paid, awaiting admin activation (promo_status='paid' but is_promo stays 0
+            // until admin approves; if you want auto-feature, set is_promo=1 here instead).
+            db()->prepare("UPDATE listings SET promo_status='paid', updated_at=NOW() WHERE id=?")
+                ->execute([(int)$promo['listing_id']]);
+
+            // Look up details for a nice notification.
+            $tStmt = db()->prepare("SELECT title FROM listings WHERE id=?");
+            $tStmt->execute([(int)$promo['listing_id']]);
+            $title = $tStmt->fetchColumn() ?: ('listing #' . (int)$promo['listing_id']);
+
+            $sStmt = db()->prepare("SELECT full_name FROM users WHERE id=?");
+            $sStmt->execute([(int)$promo['seller_id']]);
+            $seller = $sStmt->fetchColumn() ?: 'A seller';
+
+            db()->commit();
+
+            notifyAdmin(
+                'promo_payment',
+                "{$seller} paid the promo fee for \"{$title}\". Review and activate the promo.",
+                'admin.php?tab=listings'
+            );
+            return 'paid';
+        } catch (Throwable $e) {
+            db()->rollBack();
+            error_log('syncPromoWithXendit: ' . $e->getMessage());
+            return $status;
+        }
+    }
+    if (in_array($remote, ['EXPIRED','FAILED'], true)) {
+        $new = $remote === 'EXPIRED' ? 'expired' : 'cancelled';
+        try {
+            db()->prepare("UPDATE promo_payments SET status=?, updated_at=NOW() WHERE id=?")
+                ->execute([$new, (int)$promo['id']]);
+            db()->prepare("UPDATE listings SET promo_status='none' WHERE id=? AND promo_status='pending_payment'")
+                ->execute([(int)$promo['listing_id']]);
+        } catch (Throwable $e) {}
+        return $new;
+    }
+    return $status;
 }
 
 /* ============ SVG placeholder (no external file needed) ============ */

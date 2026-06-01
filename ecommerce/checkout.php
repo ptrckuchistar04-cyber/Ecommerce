@@ -43,13 +43,13 @@ include __DIR__ . '/includes/header.php';
       <h2 class="font-display font-bold text-navy mb-4">Payment</h2>
       <div class="bg-slate-50 rounded-xl p-4 mb-5 text-sm">
         <div class="flex items-center gap-2 mb-1"><span class="text-2xl">💰</span><span class="font-semibold text-navy">Pay securely with Xendit</span></div>
-        <p class="text-ink/70">You'll be redirected to Xendit's secure invoice page where you can pay via GCash, GrabPay, Maya, credit/debit cards, online banking, or 7-Eleven.</p>
+        <p class="text-ink/70">You'll get a <b>QR code to scan</b> (or a button to open Xendit's secure page) to pay via GCash, GrabPay, Maya, cards, online banking, or 7-Eleven.</p>
       </div>
 
       <form method="POST" action="api/payment.php">
         <?= csrfField() ?>
         <button class="btn btn-primary w-full justify-center text-lg py-4">
-          Pay <?= money($total) ?> via Xendit →
+          Generate QR & Pay <?= money($total) ?> →
         </button>
       </form>
 

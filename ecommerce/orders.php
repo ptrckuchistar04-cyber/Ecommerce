@@ -35,7 +35,7 @@ include __DIR__ . '/includes/header.php';
           <div class="font-bold text-orange text-lg"><?= money($o['total_reservation_fee']) ?></div>
           <span class="chip bg-<?= $color ?>-100 text-<?= $color ?>-700"><?= ucfirst($o['status']) ?></span>
           <?php if ($o['status']==='pending' && !empty($o['xendit_invoice_url'])): ?>
-            <a href="<?= e($o['xendit_invoice_url']) ?>" class="btn btn-primary text-sm">Pay Now</a>
+            <a href="pay.php?order=<?= e($o['order_number']) ?>" class="btn btn-primary text-sm">Pay Now</a>
           <?php else: ?>
             <a href="order-success.php?order=<?= e($o['order_number']) ?>" class="btn btn-ghost text-sm">View</a>
           <?php endif; ?>

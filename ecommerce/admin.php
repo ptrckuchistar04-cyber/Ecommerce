@@ -102,6 +102,103 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         $msg = 'Listing deleted.';
     }
 
+    if ($act === 'mark_sold') {
+        db()->prepare("UPDATE listings SET status='sold', updated_at=NOW() WHERE id=?")->execute([(int)$_POST['id']]);
+        $msg = 'Item marked as sold.';
+    }
+
+    // ----- Mark an order paid / not paid -----
+    if ($act === 'mark_paid') {
+        $txId = (int)$_POST['id'];
+        if (settleTransactionPaid($txId)) {
+            db()->prepare("INSERT INTO payment_logs (transaction_id, invoice_id, status, payload) VALUES (?,?,?,?)")
+                ->execute([$txId, null, 'PAID_MANUAL_ADMIN', json_encode(['admin' => currentUserId()])]);
+            $msg = 'Order marked as PAID. Its items are now reserved.';
+        } else {
+            $msg = 'Could not mark this order paid.';
+        }
+    }
+
+    if ($act === 'mark_unpaid') {
+        $txId = (int)$_POST['id'];
+        try {
+            db()->beginTransaction();
+            // Revert order to pending and release its listings back to available
+            // (only those not already sold).
+            db()->prepare("UPDATE transactions SET status='pending', updated_at=NOW() WHERE id=?")->execute([$txId]);
+            db()->prepare(
+              "UPDATE listings l JOIN transaction_items ti ON l.id=ti.listing_id
+               SET l.status='available', l.updated_at=NOW()
+               WHERE ti.transaction_id=? AND l.status='reserved'")->execute([$txId]);
+            db()->prepare("INSERT INTO payment_logs (transaction_id, invoice_id, status, payload) VALUES (?,?,?,?)")
+                ->execute([$txId, null, 'UNPAID_MANUAL_ADMIN', json_encode(['admin' => currentUserId()])]);
+            db()->commit();
+            $msg = 'Order marked as NOT paid. Items returned to listings.';
+        } catch (Throwable $e) {
+            db()->rollBack(); error_log('mark_unpaid: '.$e->getMessage());
+            $msg = 'Could not update this order.';
+        }
+    }
+
+    // ----- Cancel a reservation: bring the item back to public listings -----
+    if ($act === 'cancel_reservation') {
+        $lid = (int)$_POST['id'];
+        try {
+            db()->beginTransaction();
+            db()->prepare("UPDATE listings SET status='available', updated_at=NOW() WHERE id=? AND status='reserved'")
+                ->execute([$lid]);
+            // Cancel the related paid order(s) for this listing so it leaves the reserved view.
+            db()->prepare(
+              "UPDATE transactions t
+               JOIN transaction_items ti ON ti.transaction_id = t.id
+               SET t.status='cancelled', t.updated_at=NOW()
+               WHERE ti.listing_id=? AND t.status='paid'")->execute([$lid]);
+            db()->commit();
+            $msg = 'Reservation cancelled. Item is back on the listings.';
+        } catch (Throwable $e) {
+            db()->rollBack(); error_log('cancel_reservation: '.$e->getMessage());
+            $msg = 'Could not cancel this reservation.';
+        }
+    }
+
+    // ----- Promote / unpromote a listing -----
+    if ($act === 'toggle_promo') {
+        $lid = (int)$_POST['id'];
+        $cur = db()->prepare("SELECT is_promo FROM listings WHERE id=?"); $cur->execute([$lid]);
+        $isPromo = (int)$cur->fetchColumn();
+        $next = $isPromo ? 0 : 1;
+        if (hasPromoFields()) {
+            db()->prepare("UPDATE listings SET is_promo=?, promo_status=?, updated_at=NOW() WHERE id=?")
+                ->execute([$next, $next ? 'paid' : 'none', $lid]);
+        } else {
+            db()->prepare("UPDATE listings SET is_promo=? WHERE id=?")->execute([$next, $lid]);
+        }
+        $msg = $next ? '⭐ Listing is now promoted (featured).' : 'Listing removed from promos.';
+    }
+
+    // ----- Admin approves a seller's paid promo request -----
+    if ($act === 'approve_promo') {
+        $lid = (int)$_POST['id'];
+        if (hasPromoFields()) {
+            db()->prepare("UPDATE listings SET is_promo=1, promo_status='paid', updated_at=NOW() WHERE id=?")->execute([$lid]);
+        } else {
+            db()->prepare("UPDATE listings SET is_promo=1 WHERE id=?")->execute([$lid]);
+        }
+        $msg = '⭐ Promo activated for this listing.';
+    }
+
+    // ----- Mark a notification read -----
+    if ($act === 'read_notification') {
+        if (hasAdminNotifications()) {
+            db()->prepare("UPDATE admin_notifications SET is_read=1 WHERE id=?")->execute([(int)$_POST['id']]);
+        }
+        $msg = 'Notification dismissed.';
+    }
+    if ($act === 'read_all_notifications') {
+        if (hasAdminNotifications()) db()->query("UPDATE admin_notifications SET is_read=1 WHERE is_read=0");
+        $msg = 'All notifications marked read.';
+    }
+
     if ($act === 'toggle_status') {
         $id = (int)$_POST['id'];
         $cur = db()->prepare("SELECT status FROM listings WHERE id=?"); $cur->execute([$id]); $r = $cur->fetch();
@@ -173,12 +270,35 @@ $stats = [
   'paid'      => (int)db()->query("SELECT COUNT(*) FROM transactions WHERE status='paid'")->fetchColumn(),
   'users'     => (int)db()->query("SELECT COUNT(*) FROM users WHERE role='customer'")->fetchColumn(),
   'inquiries' => (int)db()->query("SELECT COUNT(*) FROM sell_inquiries WHERE status='new'")->fetchColumn(),
+  'reserved'  => (int)db()->query("SELECT COUNT(*) FROM listings WHERE status='reserved'")->fetchColumn(),
 ];
 $revenue = (float)db()->query("SELECT COALESCE(SUM(total_reservation_fee),0) FROM transactions WHERE status='paid'")->fetchColumn();
 
-$listings  = db()->query("SELECT id, type, title, price, reservation_fee, status, is_promo, created_at FROM listings ORDER BY created_at DESC LIMIT 100")->fetchAll();
+$promoCol  = hasPromoFields() ? ', promo_status' : '';
+$listings  = db()->query("SELECT id, type, title, price, reservation_fee, status, is_promo{$promoCol}, created_at FROM listings ORDER BY created_at DESC LIMIT 100")->fetchAll();
 $orders    = db()->query("SELECT t.*, u.full_name, u.email FROM transactions t JOIN users u ON u.id=t.user_id ORDER BY t.created_at DESC LIMIT 100")->fetchAll();
-$inquiries = db()->query("SELECT i.*, u.full_name, u.email FROM sell_inquiries i JOIN users u ON u.id=i.user_id ORDER BY i.created_at DESC LIMIT 100")->fetchAll();
+
+// Sell inquiries — hide approved ones (they've already become listings).
+$inquiries = db()->query(
+  "SELECT i.*, u.full_name, u.email FROM sell_inquiries i
+   JOIN users u ON u.id=i.user_id
+   WHERE i.status <> 'approved'
+   ORDER BY i.created_at DESC LIMIT 100")->fetchAll();
+
+// Reserved items — products that have been paid for, with the buyer + order.
+$reserved = db()->query(
+  "SELECT l.id, l.type, l.title, l.price, l.reservation_fee, l.main_image, l.updated_at,
+          t.order_number, t.created_at AS paid_at, u.full_name, u.email, u.phone
+   FROM listings l
+   JOIN transaction_items ti ON ti.listing_id = l.id
+   JOIN transactions t      ON t.id = ti.transaction_id AND t.status IN ('paid','completed')
+   JOIN users u             ON u.id = t.user_id
+   WHERE l.status = 'reserved'
+   ORDER BY t.created_at DESC LIMIT 100")->fetchAll();
+
+// Admin notifications (e.g. seller paid a promo fee).
+$notifications = getAdminNotifications(30);
+$unreadCount   = unreadAdminNotificationCount();
 
 $pageTitle = 'Admin — On The Line';
 include __DIR__ . '/includes/header.php';
@@ -191,8 +311,13 @@ include __DIR__ . '/includes/header.php';
 
   <!-- Tabs -->
   <div class="mt-6 flex flex-wrap gap-2 border-b">
-    <?php foreach (['overview'=>'📈 Overview','listings'=>'🏷️ Listings','orders'=>'💳 Orders','inquiries'=>'💼 Sell Inquiries'] as $k=>$v): ?>
-      <a href="?tab=<?= $k ?>" class="px-4 py-2 -mb-px border-b-2 <?= $tab===$k ? 'border-orange text-orange font-bold':'border-transparent text-ink/70 hover:text-navy' ?>"><?= $v ?></a>
+    <?php
+      $notifLabel = '🔔 Notifications' . ($unreadCount ? " ({$unreadCount})" : '');
+      $tabs = ['overview'=>'📈 Overview','listings'=>'🏷️ Listings','reserved'=>'📦 Reserved','orders'=>'💳 Orders','inquiries'=>'💼 Sell Inquiries','notifications'=>$notifLabel];
+      foreach ($tabs as $k=>$v): ?>
+      <a href="?tab=<?= $k ?>" class="px-4 py-2 -mb-px border-b-2 <?= $tab===$k ? 'border-orange text-orange font-bold':'border-transparent text-ink/70 hover:text-navy' ?>">
+        <?= $v ?><?php if ($k==='notifications' && $unreadCount): ?><span class="ml-1 inline-block w-2 h-2 rounded-full bg-rose-500 align-middle"></span><?php endif; ?>
+      </a>
     <?php endforeach; ?>
   </div>
 
@@ -203,6 +328,7 @@ include __DIR__ . '/includes/header.php';
         ['Available',      $stats['available'],'✅','from-emerald-500 to-teal-500'],
         ['Orders',         $stats['orders'],   '💳','from-navy to-navy2'],
         ['Paid Orders',    $stats['paid'],     '💰','from-emerald-600 to-emerald-800'],
+        ['Reserved',       $stats['reserved'], '📦','from-teal-500 to-emerald-600'],
         ['Customers',      $stats['users'],    '👥','from-blue-500 to-indigo-500'],
         ['New Inquiries',  $stats['inquiries'],'💼','from-purple-500 to-pink-500'],
         ['Revenue',        money($revenue),    '💵','from-orange to-rose-500'],
@@ -327,7 +453,11 @@ include __DIR__ . '/includes/header.php';
               <td class="p-3 text-right text-orange font-semibold"><?= money($l['reservation_fee']) ?></td>
               <td class="p-3"><span class="chip bg-slate-100 text-slate-700"><?= $l['status'] ?></span></td>
               <td class="p-3 text-center"><?= $l['is_promo']?'⭐':'—' ?></td>
-              <td class="p-3 flex gap-1">
+              <td class="p-3 flex flex-wrap gap-1">
+                <?php if (!$l['is_promo'] && ($l['promo_status'] ?? '') === 'paid'): ?>
+                  <form method="POST"><?= csrfField() ?><input type="hidden" name="act" value="approve_promo"><input type="hidden" name="id" value="<?= (int)$l['id'] ?>"><button class="text-xs bg-emerald-100 text-emerald-700 rounded-lg px-2 py-1 font-semibold" title="Seller paid — activate the promo">✅ Activate Promo</button></form>
+                <?php endif; ?>
+                <form method="POST"><?= csrfField() ?><input type="hidden" name="act" value="toggle_promo"><input type="hidden" name="id" value="<?= (int)$l['id'] ?>"><button class="text-xs <?= $l['is_promo']?'bg-amber-100 text-amber-700':'bg-orange/10 text-orange' ?> rounded-lg px-2 py-1 font-semibold" title="<?= $l['is_promo']?'Remove from promos':'Feature this listing' ?>"><?= $l['is_promo']?'★ Unpromote':'☆ Promote' ?></button></form>
                 <form method="POST"><?= csrfField() ?><input type="hidden" name="act" value="toggle_status"><input type="hidden" name="id" value="<?= (int)$l['id'] ?>"><button class="text-xs btn btn-ghost py-1 px-2">Toggle</button></form>
                 <form method="POST" onsubmit="return confirm('Delete this listing?')"><?= csrfField() ?><input type="hidden" name="act" value="delete_listing"><input type="hidden" name="id" value="<?= (int)$l['id'] ?>"><button class="text-xs bg-rose-100 text-rose-600 rounded-lg px-2 py-1">Delete</button></form>
               </td>
@@ -337,21 +467,89 @@ include __DIR__ . '/includes/header.php';
       </table>
     </div>
 
+  <?php elseif ($tab==='reserved'): ?>
+    <div class="mt-6">
+      <div class="flex items-center justify-between mb-3">
+        <h2 class="font-display font-bold text-navy text-lg">📦 Reserved Items</h2>
+        <span class="chip bg-emerald-100 text-emerald-700"><?= count($reserved) ?> reserved</span>
+      </div>
+      <p class="text-sm text-ink/60 mb-4">Items customers have paid the reservation fee for. These are hidden from the public listings.</p>
+
+      <?php if (empty($reserved)): ?>
+        <div class="bg-white rounded-2xl shadow-md p-12 text-center">
+          <div class="text-5xl mb-2">📭</div>
+          <p class="text-ink/60">No reserved items yet. They'll appear here once a customer completes a payment.</p>
+        </div>
+      <?php else: ?>
+        <div class="grid sm:grid-cols-2 lg:grid-cols-3 gap-4">
+          <?php foreach ($reserved as $r): ?>
+            <div class="bg-white rounded-2xl shadow-md overflow-hidden">
+              <div class="aspect-[4/3] bg-slate-100">
+                <img src="<?= e(listingImg($r['main_image'], $r['type'])) ?>" alt="" class="w-full h-full object-cover">
+              </div>
+              <div class="p-4">
+                <div class="flex items-center gap-2 mb-1">
+                  <span class="chip bg-navy/10 text-navy text-xs"><?= $r['type']==='property'?'🏠':'🚗' ?> <?= ucfirst($r['type']) ?></span>
+                  <span class="chip bg-emerald-100 text-emerald-700 text-xs">Reserved</span>
+                </div>
+                <div class="font-bold text-navy line-clamp-1"><?= e($r['title']) ?></div>
+                <div class="text-sm text-ink/60 mt-1">Price: <b><?= money($r['price']) ?></b> • Fee paid: <b class="text-orange"><?= money($r['reservation_fee']) ?></b></div>
+
+                <div class="mt-3 pt-3 border-t text-xs text-ink/70 space-y-0.5">
+                  <div>👤 <b><?= e($r['full_name']) ?></b></div>
+                  <div>✉️ <?= e($r['email']) ?></div>
+                  <?php if (!empty($r['phone'])): ?><div>📱 <?= e($r['phone']) ?></div><?php endif; ?>
+                  <div class="font-mono text-[11px] text-ink/50 mt-1"><?= e($r['order_number']) ?></div>
+                  <div class="text-ink/40"><?= date('M j, Y g:i A', strtotime($r['paid_at'])) ?></div>
+                </div>
+
+                <div class="mt-3 flex gap-2">
+                  <form method="POST" class="flex-1" onsubmit="return confirm('Mark this item SOLD? It will be removed from reserved.')">
+                    <?= csrfField() ?>
+                    <input type="hidden" name="act" value="mark_sold">
+                    <input type="hidden" name="id" value="<?= (int)$r['id'] ?>">
+                    <button class="btn btn-dark text-xs w-full justify-center">Mark as Sold</button>
+                  </form>
+                  <form method="POST" class="flex-1" onsubmit="return confirm('Cancel this reservation? The item returns to public listings.')">
+                    <?= csrfField() ?>
+                    <input type="hidden" name="act" value="cancel_reservation">
+                    <input type="hidden" name="id" value="<?= (int)$r['id'] ?>">
+                    <button class="text-xs w-full justify-center bg-rose-100 text-rose-600 rounded-xl px-3 py-2 font-semibold">Cancel Reservation</button>
+                  </form>
+                </div>
+              </div>
+            </div>
+          <?php endforeach; ?>
+        </div>
+      <?php endif; ?>
+    </div>
+
   <?php elseif ($tab==='orders'): ?>
     <div class="mt-6 bg-white rounded-2xl shadow-md overflow-hidden">
       <table class="w-full text-sm">
         <thead class="bg-navy text-white">
-          <tr><th class="p-3 text-left">Order #</th><th class="p-3 text-left">Customer</th><th class="p-3 text-right">Amount</th><th class="p-3">Status</th><th class="p-3">Date</th><th class="p-3">Invoice</th></tr>
+          <tr><th class="p-3 text-left">Order #</th><th class="p-3 text-left">Customer</th><th class="p-3 text-right">Amount</th><th class="p-3">Status</th><th class="p-3">Date</th><th class="p-3">Invoice</th><th class="p-3">Actions</th></tr>
         </thead>
         <tbody>
-          <?php foreach ($orders as $o): ?>
+          <?php foreach ($orders as $o):
+            $oc = ['paid'=>'emerald','completed'=>'emerald','pending'=>'amber','processing'=>'blue','cancelled'=>'rose','expired'=>'slate'][$o['status']] ?? 'slate';
+          ?>
             <tr class="border-b hover:bg-slate-50">
               <td class="p-3 font-mono text-xs"><?= e($o['order_number']) ?></td>
               <td class="p-3"><?= e($o['full_name']) ?><div class="text-xs text-ink/50"><?= e($o['email']) ?></div></td>
               <td class="p-3 text-right text-orange font-bold"><?= money($o['total_reservation_fee']) ?></td>
-              <td class="p-3"><span class="chip bg-slate-100"><?= $o['status'] ?></span></td>
+              <td class="p-3"><span class="chip bg-<?= $oc ?>-100 text-<?= $oc ?>-700"><?= $o['status'] ?></span></td>
               <td class="p-3 text-xs"><?= date('M j, Y', strtotime($o['created_at'])) ?></td>
               <td class="p-3"><?php if ($o['xendit_invoice_url']): ?><a href="<?= e($o['xendit_invoice_url']) ?>" target="_blank" class="text-orange text-xs hover:underline">Open ↗</a><?php endif; ?></td>
+              <td class="p-3">
+                <div class="flex flex-wrap gap-1">
+                  <?php if (!in_array($o['status'], ['paid','completed'], true)): ?>
+                    <form method="POST"><?= csrfField() ?><input type="hidden" name="act" value="mark_paid"><input type="hidden" name="id" value="<?= (int)$o['id'] ?>"><button class="text-xs bg-emerald-100 text-emerald-700 rounded-lg px-2 py-1 font-semibold">Mark Paid</button></form>
+                  <?php else: ?>
+                    <form method="POST" onsubmit="return confirm('Mark this order NOT paid? Items return to listings.')"><?= csrfField() ?><input type="hidden" name="act" value="mark_unpaid"><input type="hidden" name="id" value="<?= (int)$o['id'] ?>"><button class="text-xs bg-amber-100 text-amber-700 rounded-lg px-2 py-1 font-semibold">Mark Not Paid</button></form>
+                  <?php endif; ?>
+                </div>
+              </td>
             </tr>
           <?php endforeach; ?>
         </tbody>
@@ -427,6 +625,45 @@ include __DIR__ . '/includes/header.php';
           </div>
         </div>
       <?php endforeach; ?>
+    </div>
+
+  <?php elseif ($tab==='notifications'): ?>
+    <div class="mt-6">
+      <div class="flex items-center justify-between mb-3">
+        <h2 class="font-display font-bold text-navy text-lg">🔔 Notifications</h2>
+        <?php if ($unreadCount): ?>
+          <form method="POST"><?= csrfField() ?><input type="hidden" name="act" value="read_all_notifications"><button class="btn btn-ghost text-sm">Mark all read</button></form>
+        <?php endif; ?>
+      </div>
+
+      <?php if (!hasAdminNotifications()): ?>
+        <div class="bg-amber-50 border border-amber-200 text-amber-800 rounded-2xl p-5 text-sm">
+          Notifications need the v4 database patch. Run <code class="bg-white px-1 rounded">database_PATCH_v4.sql</code> in phpMyAdmin to enable them.
+        </div>
+      <?php elseif (empty($notifications)): ?>
+        <div class="bg-white rounded-2xl shadow-md p-12 text-center">
+          <div class="text-5xl mb-2">🔕</div>
+          <p class="text-ink/60">No notifications yet.</p>
+        </div>
+      <?php else: ?>
+        <div class="space-y-2">
+          <?php foreach ($notifications as $n): ?>
+            <div class="bg-white rounded-2xl shadow-md p-4 flex items-center gap-4 <?= $n['is_read']?'opacity-60':'' ?>">
+              <div class="text-2xl"><?= $n['type']==='promo_payment'?'⭐':'🔔' ?></div>
+              <div class="flex-1 min-w-0">
+                <div class="text-sm text-navy <?= $n['is_read']?'':'font-semibold' ?>"><?= e($n['message']) ?></div>
+                <div class="text-xs text-ink/50"><?= date('M j, Y g:i A', strtotime($n['created_at'])) ?></div>
+              </div>
+              <?php if (!empty($n['link'])): ?>
+                <a href="<?= e($n['link']) ?>" class="btn btn-ghost text-xs">Open</a>
+              <?php endif; ?>
+              <?php if (!$n['is_read']): ?>
+                <form method="POST"><?= csrfField() ?><input type="hidden" name="act" value="read_notification"><input type="hidden" name="id" value="<?= (int)$n['id'] ?>"><button class="text-xs text-ink/50 hover:text-navy">Dismiss</button></form>
+              <?php endif; ?>
+            </div>
+          <?php endforeach; ?>
+        </div>
+      <?php endif; ?>
     </div>
   <?php endif; ?>
 </div>
