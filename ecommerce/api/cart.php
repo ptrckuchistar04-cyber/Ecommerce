@@ -53,7 +53,7 @@ if ($action === 'add') {
             : '"' . $l['title'] . '" is already in your cart.';
     } catch (Exception $e) {
         error_log('Cart add error: ' . $e->getMessage());
-        $_SESSION['flash_error'] = 'Could not add item. Error: ' . $e->getMessage();
+        $_SESSION['flash_error'] = 'Sorry, we could not add that item right now. Please try again.';
     }
     header('Location: ../cart.php'); exit;
 }

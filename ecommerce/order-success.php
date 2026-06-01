@@ -33,7 +33,8 @@ include __DIR__ . '/includes/header.php';
     </div>
     <div class="flex justify-between text-sm mb-3">
       <span class="text-ink/70">Status</span>
-      <span class="chip bg-emerald-100 text-emerald-700"><?= ucfirst($order['status']) ?></span>
+      <?php $sc = ['paid'=>'emerald','completed'=>'emerald','pending'=>'amber','processing'=>'blue','cancelled'=>'rose','expired'=>'slate'][$order['status']] ?? 'slate'; ?>
+      <span class="chip bg-<?= $sc ?>-100 text-<?= $sc ?>-700"><?= ucfirst($order['status']) ?></span>
     </div>
     <hr class="my-3">
     <?php foreach ($rows as $r): ?>

@@ -2,8 +2,21 @@
 require_once __DIR__ . '/../config.php';
 require_once __DIR__ . '/../includes/functions.php';
 
-$action = $_GET['action'] ?? '';
-$id     = (int)($_GET['id'] ?? 0);
+header('Content-Type: application/json');
+
+$action = $_GET['action'] ?? ($_POST['action'] ?? '');
+$id     = (int)($_GET['id'] ?? ($_POST['id'] ?? 0));
+
+// State-changing actions must be POST + CSRF-verified.
+if (in_array($action, ['add','remove','clear'], true)) {
+    if ($_SERVER['REQUEST_METHOD'] !== 'POST') {
+        jsonOut(['success'=>false,'message'=>'POST required'], 405);
+    }
+    $t = $_POST['csrf_token'] ?? $_SERVER['HTTP_X_CSRF_TOKEN'] ?? '';
+    if (!hash_equals(csrfToken(), $t)) {
+        jsonOut(['success'=>false,'message'=>'Invalid CSRF token'], 419);
+    }
+}
 
 switch ($action) {
     case 'add':

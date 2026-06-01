@@ -71,10 +71,19 @@ ecommerce/
 
 ## 🔌 Xendit setup
 
-Your dev secret key is already in `config.php`:
-```
-xnd_development_l4Na8u8AACRCVqlzyVJj8pVuvzx2bjMF8Cy7VCAtrlVjMWxVwKXybXvfpQ2yJnwd
-```
+Secrets are **not** stored in `config.php` anymore. Put your Xendit **test** key in a
+git-ignored local file:
+
+1. Copy `config.local.example.php` → `config.local.php`
+2. Set your keys there:
+   ```php
+   define('XENDIT_SECRET_KEY',     'xnd_development_your_test_key');
+   define('XENDIT_CALLBACK_TOKEN', 'your_webhook_token');
+   ```
+   (Or set `XENDIT_SECRET_KEY` / `XENDIT_CALLBACK_TOKEN` as environment variables.)
+
+> ⚠️ If you previously committed a real key, **rotate/revoke it** in the Xendit dashboard —
+> it stays in git history even after editing the file.
 
 To receive payment confirmations (PAID, EXPIRED):
 

@@ -94,7 +94,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
 
             db()->commit();
             $msg = 'Listing created successfully.';
-        } catch (Exception $e) { db()->rollBack(); error_log($e->getMessage()); $msg = 'Error: '.$e->getMessage(); }
+        } catch (Exception $e) { db()->rollBack(); error_log('admin create_listing: '.$e->getMessage()); $msg = 'Sorry, the listing could not be created. Please check the fields and try again.'; }
     }
 
     if ($act === 'delete_listing') {
@@ -116,7 +116,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
 
         // If approving, auto-create the listing
         if ($newStatus === 'approved' && isset($_POST['auto_create'])) {
-            $lid = createListingFromInquiry($inquiryId);
+            $lid = createListingFromInquiry($inquiryId, currentUserId());
             if ($lid) {
                 // Update inquiry status
                 db()->prepare("UPDATE sell_inquiries SET status='approved', admin_notes=? WHERE id=?")

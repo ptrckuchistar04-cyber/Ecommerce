@@ -17,6 +17,22 @@ $cart = getCartItems($uid);
 if (empty($cart)) { header('Location: ../cart.php'); exit; }
 
 $total = 0; foreach ($cart as $c) $total += (float)$c['reservation_fee'];
+
+// ---- Idempotency: reuse a recent unpaid invoice instead of creating a duplicate ----
+// If the user already has a pending order for the same total created in the last hour,
+// just send them back to that existing Xendit invoice (handles refresh / double-click).
+$dupe = db()->prepare(
+   "SELECT xendit_invoice_url FROM transactions
+    WHERE user_id = ? AND status = 'pending' AND total_reservation_fee = ?
+      AND xendit_invoice_url IS NOT NULL
+      AND created_at >= (NOW() - INTERVAL 1 HOUR)
+    ORDER BY created_at DESC LIMIT 1");
+$dupe->execute([$uid, $total]);
+if ($existingUrl = $dupe->fetchColumn()) {
+    header('Location: ' . $existingUrl);
+    exit;
+}
+
 $orderNumber = generateOrderNumber();
 
 // Fetch user (for invoice payer info)
@@ -25,6 +41,21 @@ $ustmt->execute([$uid]); $user = $ustmt->fetch();
 
 try {
     db()->beginTransaction();
+
+    // ---- Race-condition guard: make sure every cart item is still available ----
+    // Lock the listing rows so a concurrent checkout can't grab the same item.
+    $ids = array_map(fn($c) => (int)$c['id'], $cart);
+    $ph  = implode(',', array_fill(0, count($ids), '?'));
+    $chk = db()->prepare("SELECT id, title, status FROM listings WHERE id IN ($ph) FOR UPDATE");
+    $chk->execute($ids);
+    foreach ($chk->fetchAll() as $row) {
+        if ($row['status'] !== 'available') {
+            db()->rollBack();
+            $_SESSION['flash_error'] = '"' . $row['title'] . '" is no longer available. Please remove it from your cart.';
+            header('Location: ../cart.php');
+            exit;
+        }
+    }
 
     // Create transaction
     $tx = db()->prepare(
@@ -93,9 +124,9 @@ try {
     $log = db()->prepare("INSERT INTO payment_logs (transaction_id, invoice_id, status, payload) VALUES (?,?,?,?)");
     $log->execute([$txId, $data['id'], 'INVOICE_CREATED', $resp]);
 
-    // Clear cart
-    $clr = db()->prepare("DELETE FROM reservation_carts WHERE user_id=?");
-    $clr->execute([$uid]);
+    // NOTE: cart is intentionally NOT cleared here. We only clear it once payment
+    // is confirmed (see xendit_webhook.php). This way an abandoned/failed payment
+    // leaves the cart intact so the customer can retry.
 
     db()->commit();
 
