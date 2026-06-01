@@ -18,9 +18,17 @@ function toast(msg, type='info') {
 }
 
 /* ---------- Compare ---------- */
+function csrfToken() {
+  return document.querySelector('meta[name="csrf-token"]')?.content || '';
+}
 async function addToCompare(id) {
   try {
-    const r = await fetch('api/compare.php?action=add&id=' + id);
+    const body = new URLSearchParams({ id: String(id), csrf_token: csrfToken() });
+    const r = await fetch('api/compare.php?action=add', {
+      method: 'POST',
+      headers: { 'X-CSRF-Token': csrfToken() },
+      body
+    });
     const j = await r.json();
     if (j.success) { toast('Added to comparison ⇆', 'success'); refreshCompareBadge(j.count); }
     else toast(j.message || 'Could not add', 'error');

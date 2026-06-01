@@ -38,26 +38,32 @@ function hashPassword(string $p): string { return password_hash($p, PASSWORD_BCR
 function verifyPassword(string $p, string $h): bool { return password_verify($p, $h); }
 function generateOrderNumber(): string { return 'OTL-' . strtoupper(bin2hex(random_bytes(6))); }
 
-/* ============ SCHEMA DETECTION ============ */
+/* ============ SCHEMA DETECTION (memoized — runs once per request) ============ */
 function hasPropertyExtraFields(): bool {
+    static $r = null;
+    if ($r !== null) return $r;
     try {
-        $stmt = db()->query("SHOW COLUMNS FROM property_details LIKE 'is_mortgaged'");
-        return (bool)$stmt->fetch();
-    } catch (Exception $e) { return false; }
+        $r = (bool) db()->query("SHOW COLUMNS FROM property_details LIKE 'is_mortgaged'")->fetch();
+    } catch (Exception $e) { $r = false; }
+    return $r;
 }
 
 function hasVehicleExtraFields(): bool {
+    static $r = null;
+    if ($r !== null) return $r;
     try {
-        $stmt = db()->query("SHOW COLUMNS FROM vehicle_details LIKE 'color'");
-        return (bool)$stmt->fetch();
-    } catch (Exception $e) { return false; }
+        $r = (bool) db()->query("SHOW COLUMNS FROM vehicle_details LIKE 'color'")->fetch();
+    } catch (Exception $e) { $r = false; }
+    return $r;
 }
 
 function hasInquiryDetailFields(): bool {
+    static $r = null;
+    if ($r !== null) return $r;
     try {
-        $stmt = db()->query("SHOW COLUMNS FROM sell_inquiries LIKE 'property_type'");
-        return (bool)$stmt->fetch();
-    } catch (Exception $e) { return false; }
+        $r = (bool) db()->query("SHOW COLUMNS FROM sell_inquiries LIKE 'property_type'")->fetch();
+    } catch (Exception $e) { $r = false; }
+    return $r;
 }
 
 /* ============ LISTINGS ============ */
@@ -156,11 +162,25 @@ function getListingImages(int $id): array {
 }
 
 /* ============ SELL INQUIRY → LISTING CREATION ============ */
-function createListingFromInquiry(int $inquiryId): ?int {
+function createListingFromInquiry(int $inquiryId, ?int $adminId = null): ?int {
     $stmt = db()->prepare("SELECT * FROM sell_inquiries WHERE id = ?");
     $stmt->execute([$inquiryId]);
     $inq = $stmt->fetch();
     if (!$inq) return null;
+
+    // Use the approving admin's id; fall back to any administrator, never a blind "1".
+    if ($adminId === null) $adminId = currentUserId();
+    if ($adminId === null) {
+        try {
+            $adminId = (int) db()->query(
+                "SELECT id FROM users WHERE role='administrator' ORDER BY id LIMIT 1"
+            )->fetchColumn();
+        } catch (Exception $e) { $adminId = null; }
+    }
+    if (!$adminId) {
+        error_log('createListingFromInquiry: no admin id available');
+        return null;
+    }
 
     try {
         db()->beginTransaction();
@@ -175,7 +195,7 @@ function createListingFromInquiry(int $inquiryId): ?int {
              VALUES (?, ?, ?, ?, ?, ?, ?, 'available', 0)"
         );
         $lStmt->execute([
-            1,
+            $adminId,
             $inq['item_type'],
             $inq['title'],
             $inq['description'],

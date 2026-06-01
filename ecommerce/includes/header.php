@@ -8,6 +8,7 @@ $isHome    = basename($_SERVER['PHP_SELF']) === 'index.php';
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
+<meta name="csrf-token" content="<?= e(csrfToken()) ?>">
 <title><?= e($pageTitle) ?></title>
 
 <script src="https://cdn.tailwindcss.com"></script>

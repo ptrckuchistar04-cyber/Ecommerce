@@ -29,23 +29,44 @@ if (!$externalId || !$status) { http_response_code(400); die('Missing fields'); 
 try {
     db()->beginTransaction();
 
-    $stmt = db()->prepare("SELECT id, status FROM transactions WHERE order_number=?");
+    $stmt = db()->prepare("SELECT id, status, total_reservation_fee FROM transactions WHERE order_number=?");
     $stmt->execute([$externalId]);
     $tx = $stmt->fetch();
 
     if ($tx) {
-        if ($status === 'PAID') {
-            db()->prepare("UPDATE transactions SET status='paid', updated_at=NOW() WHERE id=?")->execute([$tx['id']]);
-            db()->prepare(
-              "UPDATE listings l JOIN transaction_items ti ON l.id=ti.listing_id
-               SET l.status='reserved', l.updated_at=NOW()
-               WHERE ti.transaction_id=?")->execute([$tx['id']]);
-        } elseif (in_array($status, ['EXPIRED','FAILED'], true)) {
+        // Always log the raw callback first (audit trail, even if we skip processing).
+        db()->prepare("INSERT INTO payment_logs (transaction_id, invoice_id, status, payload) VALUES (?,?,?,?)")
+            ->execute([$tx['id'], $invoiceId, $status, $raw]);
+
+        // Idempotency: don't re-process an order that's already settled.
+        $alreadyFinal = in_array($tx['status'], ['paid','expired','cancelled','completed'], true);
+
+        if ($status === 'PAID' && !$alreadyFinal) {
+            // Verify the amount actually paid matches what we expect.
+            $expected = (float) $tx['total_reservation_fee'];
+            $paid     = (float) ($data['paid_amount'] ?? $data['amount'] ?? 0);
+
+            if ($paid + 0.01 >= $expected) {
+                db()->prepare("UPDATE transactions SET status='paid', updated_at=NOW() WHERE id=?")->execute([$tx['id']]);
+                db()->prepare(
+                  "UPDATE listings l JOIN transaction_items ti ON l.id=ti.listing_id
+                   SET l.status='reserved', l.updated_at=NOW()
+                   WHERE ti.transaction_id=?")->execute([$tx['id']]);
+                // Payment confirmed → clear this user's reservation cart.
+                $owner = db()->prepare("SELECT user_id FROM transactions WHERE id=?");
+                $owner->execute([$tx['id']]);
+                if ($ownerId = $owner->fetchColumn()) {
+                    db()->prepare("DELETE FROM reservation_carts WHERE user_id=?")->execute([$ownerId]);
+                }
+            } else {
+                // Underpayment / mismatch — flag for manual review, do NOT auto-confirm.
+                error_log("Xendit amount mismatch for {$externalId}: paid {$paid}, expected {$expected}");
+                db()->prepare("UPDATE transactions SET status='processing', updated_at=NOW() WHERE id=?")->execute([$tx['id']]);
+            }
+        } elseif (in_array($status, ['EXPIRED','FAILED'], true) && !$alreadyFinal) {
             db()->prepare("UPDATE transactions SET status='".($status==='EXPIRED'?'expired':'cancelled')."', updated_at=NOW() WHERE id=?")
                 ->execute([$tx['id']]);
         }
-        db()->prepare("INSERT INTO payment_logs (transaction_id, invoice_id, status, payload) VALUES (?,?,?,?)")
-            ->execute([$tx['id'], $invoiceId, $status, $raw]);
     } else {
         // Log even if order missing
         db()->prepare("INSERT INTO payment_logs (transaction_id, invoice_id, status, payload) VALUES (NULL,?,?,?)")
